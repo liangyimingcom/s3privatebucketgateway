@@ -1,0 +1,2 @@
+# s3privatebucketgateway
+s3privatebucketgateway S3私有桶网关代理与子目录级404重定向 一个生产就绪的解决方案，通过Nginx代理私有S3内容，具备智能的子目录级404重定向功能。
