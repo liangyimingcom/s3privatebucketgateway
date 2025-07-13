@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'S3私有桶网关代理与子目录级404重定向 - 一键部署'
+
+Parameters:
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: 用于SSH访问的EC2密钥对
+    ConstraintDescription: 必须是现有EC2密钥对的名称
+  
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.micro, t3.small, t3.medium, t3.large]
+    Description: EC2实例类型
+  
+  ProjectName:
+    Type: String
+    Default: s3-gateway
+    Description: 用于资源命名的项目名称
+    AllowedPattern: '[a-zA-Z0-9-]*'
+
+Resources:
+  # S3桶用于内容存储
+  ContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  # EC2访问S3的IAM角色
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub '${ContentBucket}'
+                  - !Sub '${ContentBucket}/*'
+
+  # 实例配置文件
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-instance-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # 安全组
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${ProjectName}-sg'
+      GroupDescription: S3私有桶网关代理安全组
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH访问
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP访问
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS访问
+
+  # EC2实例
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y nginx awscli python3 python3-pip git
+
+          # 安装Python依赖
+          pip3 install boto3 flask
+
+          # 创建目录
+          mkdir -p /opt/s3-proxy
+          mkdir -p /var/cache/s3-proxy
+          chown nginx:nginx /var/cache/s3-proxy
+
+          # 下载并设置应用文件
+          cd /tmp
+          curl -L https://github.com/your-username/s3-private-gateway-proxy/archive/main.zip -o poc.zip
+          unzip poc.zip
+          cp -r s3-private-gateway-proxy-main/scripts/* /opt/s3-proxy/
+          cp s3-private-gateway-proxy-main/infrastructure/nginx.conf /etc/nginx/conf.d/s3-proxy.conf
+          cp s3-private-gateway-proxy-main/infrastructure/s3-proxy.service /etc/systemd/system/
+
+          # 更新配置中的实际桶名称
+          sed -i "s/BUCKET_PLACEHOLDER/${ContentBucket}/g" /opt/s3-proxy/s3-proxy.py
+          sed -i "s/REGION_PLACEHOLDER/${AWS::Region}/g" /opt/s3-proxy/s3-proxy.py
+
+          # 设置权限
+          chmod +x /opt/s3-proxy/s3-proxy.py
+          chown -R nginx:nginx /opt/s3-proxy
+
+          # 启动服务
+          systemctl daemon-reload
+          systemctl enable nginx s3-proxy
+          systemctl start nginx s3-proxy
+
+          # 上传初始内容到S3
+          aws s3 sync /tmp/s3-private-gateway-proxy-main/s3-content/ s3://${ContentBucket}/ --region ${AWS::Region}
+
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-instance'
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  BucketName:
+    Description: 用于内容存储的S3桶名称
+    Value: !Ref ContentBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-BucketName'
+
+  InstanceId:
+    Description: EC2实例ID
+    Value: !Ref EC2Instance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  PublicIP:
+    Description: EC2实例的公网IP地址
+    Value: !GetAtt EC2Instance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+
+  WebsiteURL:
+    Description: 访问代理服务的URL
+    Value: !Sub 'http://${EC2Instance.PublicIp}'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebsiteURL'
+
+  HealthCheckURL:
+    Description: 健康检查端点
+    Value: !Sub 'http://${EC2Instance.PublicIp}/health'
+    Export:
+      Name: !Sub '${AWS::StackName}-HealthCheckURL'

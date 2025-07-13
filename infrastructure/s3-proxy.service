@@ -1,0 +1,15 @@
+[Unit]
+Description=S3 Proxy Service
+After=network.target
+
+[Service]
+Type=simple
+User=nginx
+Group=nginx
+WorkingDirectory=/opt/s3-proxy
+ExecStart=/usr/bin/python3 /opt/s3-proxy/s3-proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
