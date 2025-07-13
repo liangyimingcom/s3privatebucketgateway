@@ -39,10 +39,11 @@ aws cloudformation deploy \
 ## 🏗️ 架构设计
 
 ```
-互联网 → ALB/CloudFront → EC2 (Nginx) → Python Flask → S3私有桶
+企业内网 → ALB → 网关代理（EC2 Nginx） → Python Flask → S3私有桶
                                 ↓
                            本地缓存 (60秒TTL)
 ```
+
 
 ### 组件说明
 
